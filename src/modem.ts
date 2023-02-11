@@ -1,7 +1,7 @@
 import { clone } from 'ramda';
 import { BehaviorSubject, Observable, Subject } from 'rxjs';
 import { concatMap, filter, map, take, takeWhile, tap } from 'rxjs/operators';
-import SerialPort from 'serialport';
+import { SerialPort, SerialPortMockOpenOptions } from 'serialport';
 import { DeliveredSMSReport, ModemConfig, ModemStatus, ModemTask, ReceivedSMS, SMS } from './models';
 // tslint:disable-next-line: no-var-requires
 const Readline = require('@serialport/parser-readline');
@@ -37,12 +37,17 @@ export class Modem {
   private error$: Subject<string> = new Subject();
 
   constructor(modemCfg: ModemConfig, errorCallback?: (err: any) => void) {
-    this.port = new SerialPort(modemCfg.port, { baudRate: modemCfg.baudRate, autoOpen: false });
+    const serialPortOpenOptions = {
+      path: modemCfg.port,
+      baudRate: modemCfg.baudRate,
+      autoOpen: false,
+    };
+    this.port = new SerialPort(serialPortOpenOptions);
     this.updateStatus({ debugMode: modemCfg.debugMode ? true : false });
     this.msPause = modemCfg.msPause;
     this.initCommands = modemCfg.initCommands;
 
-    this.port.on('close', ({ disconnected }) => {
+    this.port.on('close', ({ disconnected }: { disconnected: boolean }) => {
       if (disconnected) {
         this.updateStatus({ connected: false, error: true });
         this.error$.next('Modem disconnected');
@@ -61,16 +66,16 @@ export class Modem {
     this.data$
       .pipe(
         // logs receivedData from modem
-        tap(receivedData => this.log$.next(receivedData)),
+        tap((receivedData) => this.log$.next(receivedData)),
 
-        tap(receivedData => {
+        tap((receivedData) => {
           if (receivedData.includes('ERROR')) {
             this.error$.next(receivedData);
           }
         }),
 
-        tap(receivedData => {
-          this.status$.subscribe(status => {
+        tap((receivedData) => {
+          this.status$.subscribe((status) => {
             if (status.debugMode) {
               // tslint:disable-next-line: no-console
               console.log('\r\n\r\n------------------modem says-------------------------');
@@ -89,7 +94,7 @@ export class Modem {
         }),
 
         // verify modem answer, remove currentTask and start nextTaskExecute()
-        tap(receivedData => {
+        tap((receivedData) => {
           if (!this.currentTask && !this.taskStack) {
             return;
           }
@@ -118,17 +123,17 @@ export class Modem {
     this.port.on('error', this.handleError);
     this.error$
       .pipe(
-        tap(err => {
+        tap((err) => {
           this.updateStatus({ error: true });
           // tslint:disable-next-line: no-console
           console.log('Modem error:', err);
         }),
         // logs err
-        tap(err => this.log$.next(err)),
+        tap((err) => this.log$.next(err)),
       )
       .subscribe();
 
-    this.port.on('open', err => {
+    this.port.on('open', (err) => {
       if (err) {
         this.error$.next(err);
         this.updateStatus({ connected: false, error: true });
@@ -148,13 +153,13 @@ export class Modem {
     this.port.open(errorCallback);
 
     // init modem
-    modemInitComands.forEach(command => {
+    modemInitComands.forEach((command) => {
       this.addTask({
         description: command,
         expectedResult: 'OK',
         fn: () => this.port.write(`${command}\r`, this.handleError),
         id: this.generateTaskID(),
-        onResultFn: x => null,
+        onResultFn: (x) => null,
       });
     });
 
@@ -170,7 +175,7 @@ export class Modem {
       text: '',
     };
     return this.data$.pipe(
-      tap(data => {
+      tap((data) => {
         if (data.includes('+CMTI:')) {
           newSMS.id = +data.split(',')[1];
           this.addTask({
@@ -178,7 +183,7 @@ export class Modem {
             expectedResult: '+CMGR:',
             fn: () => this.port.write(`AT+CMGR=${+data.split(',')[1]}\r`, this.handleError),
             id: this.generateTaskID(),
-            onResultFn: x => null,
+            onResultFn: (x) => null,
           });
           this.nextTaskExecute();
         }
@@ -186,13 +191,13 @@ export class Modem {
           readingSMS = true;
         }
       }),
-      filter(data => readingSMS),
-      tap(data => {
+      filter((data) => readingSMS),
+      tap((data) => {
         if (data.includes('OK')) {
           readingSMS = false;
         }
       }),
-      map(data => {
+      map((data) => {
         if (data.includes('OK')) {
           newSMS.text = newSMS.text ? newSMS.text.trim() : '';
           return newSMS;
@@ -228,7 +233,7 @@ export class Modem {
           expectedResult: 'OK',
           fn: () => this.port.write(`AT+CMGD=${id}\r`, this.handleError),
           id: this.generateTaskID(),
-          onResultFn: x => null,
+          onResultFn: (x) => null,
         });
         this.nextTaskExecute();
       }),
@@ -238,7 +243,7 @@ export class Modem {
   public sendSMS({ phoneNumber, text }: SMS): Observable<DeliveredSMSReport> {
     const smsInfo$: BehaviorSubject<any> = new BehaviorSubject(null);
     let cmgsNumber: number;
-    this.error$.pipe(take(1)).subscribe(n => smsInfo$.error(n));
+    this.error$.pipe(take(1)).subscribe((n) => smsInfo$.error(n));
 
     this.addTask({
       description: `AT+CMGS="${phoneNumber}"`,
@@ -249,14 +254,14 @@ export class Modem {
         }, this.msPause);
       },
       id: this.generateTaskID(),
-      onResultFn: x => null,
+      onResultFn: (x) => null,
     });
     this.addTask({
       description: `${text}\x1A`,
       expectedResult: '+CMGS:',
       fn: () => this.port.write(`${text}\x1A`, this.handleError),
       id: this.generateTaskID(),
-      onResultFn: receivedData => {
+      onResultFn: (receivedData) => {
         smsInfo$.next(receivedData);
       },
     });
@@ -265,16 +270,16 @@ export class Modem {
 
     return smsInfo$.pipe(
       filter(notNull),
-      filter(data => data.includes('+CMGS:')),
-      tap(data => {
+      filter((data) => data.includes('+CMGS:')),
+      tap((data) => {
         cmgsNumber = parseInt(data.split(':')[1], 10);
       }),
       concatMap(() => this.data$),
-      filter(data => data.includes('+CDS:')),
-      filter(data => parseInt(data.split(',')[1], 10) === cmgsNumber),
+      filter((data) => data.includes('+CDS:')),
+      filter((data) => parseInt(data.split(',')[1], 10) === cmgsNumber),
 
       // convert +CDS string to DeliveredSMSReport object
-      map(data => {
+      map((data) => {
         // data = '+CDS: 6,238,"910000000",129,"19/12/21,00:04:39+00","19/12/21,00:04:41+00",0'
         const cds = data
           .replace(/\+CDS\:\ /gi, '')
@@ -325,7 +330,7 @@ export class Modem {
   }
 
   private updateStatus(patch: Partial<ModemStatus>) {
-    this.status$.pipe(take(1)).subscribe(status => {
+    this.status$.pipe(take(1)).subscribe((status) => {
       this.status$.next({ ...status, ...patch });
     });
   }
